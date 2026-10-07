@@ -50,8 +50,9 @@ source ~/.bashrc
 ### 3. Clone and build
 
 ```bash
-git clone https://github.com/sannyuntwin/ROS2_MultiThreadedExecutor.git ros2_ws
-cd ros2_ws
+mkdir -p ~/ros2 && cd ~/ros2
+git clone https://github.com/sannyuntwin/ros2_turtlesim.git
+cd ros2_turtlesim
 colcon build
 source install/setup.bash
 ```
@@ -64,24 +65,129 @@ source install/setup.bash
 
 **Terminal 1 — turtlesim:**
 ```bash
-source ~/ros2_ws/install/setup.bash
+source ~/ros2/ros2_turtlesim/install/setup.bash
 ros2 run turtlesim turtlesim_node
 ```
 
 **Terminal 2 — draw_circle node:**
 ```bash
-source ~/ros2_ws/install/setup.bash
+source ~/ros2/ros2_turtlesim/install/setup.bash
 ros2 run my_turtle_controllers draw_circle
 ```
 The node logs `Draw circle node ready for [turtle1].` and then runs silently while drawing circles.
 
 **Terminal 3 — send a navigation goal:**
 ```bash
-source ~/ros2_ws/install/setup.bash
-ros2 action send_goal /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
+source ~/ros2/ros2_turtlesim/install/setup.bash
+ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
   "{waypoints: [{position: {x: 5.0, y: 8.0, z: 0.0}, orientation: {w: 1.0}},
                 {position: {x: 2.0, y: 2.0, z: 0.0}, orientation: {w: 1.0}}],
-    linear_speed: 2.0, angular_speed: 0.0, waypoint_timeout: 10.0, resume: false}"
+    linear_speed: 2.0, angular_speed: 0.0, waypoint_timeout: 30.0, resume: false}"
+```
+
+---
+
+## Testing Each Feature
+
+> Before testing any feature: Terminal 1 (turtlesim) and Terminal 2 (draw_circle) must already be running.
+
+### Test Feature 1 — Pose feedback
+Send a goal with `--feedback`. Watch live position updates print in Terminal 3:
+```bash
+source ~/ros2/ros2_turtlesim/install/setup.bash
+ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
+  "{waypoints: [{position: {x: 5.0, y: 8.0, z: 0.0}, orientation: {w: 1.0}}],
+    linear_speed: 2.0, angular_speed: 0.0, waypoint_timeout: 30.0, resume: false}"
+```
+**Expected:** Feedback lines showing `current_x`, `current_y`, `remaining_distance` updating every 0.1s.
+
+---
+
+### Test Feature 2 — Cancel and resume
+**Step 1** — Send a 5-waypoint goal at slow speed:
+```bash
+source ~/ros2/ros2_turtlesim/install/setup.bash
+ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
+  "{waypoints: [
+      {position: {x: 1.0, y: 1.0, z: 0.0}, orientation: {w: 1.0}},
+      {position: {x: 9.0, y: 1.0, z: 0.0}, orientation: {w: 1.0}},
+      {position: {x: 9.0, y: 9.0, z: 0.0}, orientation: {w: 1.0}},
+      {position: {x: 1.0, y: 9.0, z: 0.0}, orientation: {w: 1.0}},
+      {position: {x: 5.0, y: 5.0, z: 0.0}, orientation: {w: 1.0}}],
+    linear_speed: 1.0, angular_speed: 0.0, waypoint_timeout: 60.0, resume: false}"
+```
+**Step 2** — While turtle is moving, press `Ctrl+C`.
+**Expected in Terminal 2:** `Cancelled at waypoint X. Send goal with resume=true to continue.`
+
+**Step 3** — Resume from the cancelled waypoint:
+```bash
+ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
+  "{waypoints: [], linear_speed: 0.0, angular_speed: 0.0, waypoint_timeout: 0.0, resume: true}"
+```
+**Expected:** Turtle continues from the waypoint it was heading to, not from the beginning.
+
+---
+
+### Test Feature 3 — Speed parameter in goal
+Send the same goal twice with different speeds:
+```bash
+# Slow
+ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
+  "{waypoints: [{position: {x: 8.0, y: 8.0, z: 0.0}, orientation: {w: 1.0}}],
+    linear_speed: 0.5, angular_speed: 0.0, waypoint_timeout: 30.0, resume: false}"
+# Fast
+ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
+  "{waypoints: [{position: {x: 2.0, y: 2.0, z: 0.0}, orientation: {w: 1.0}}],
+    linear_speed: 5.0, angular_speed: 0.0, waypoint_timeout: 30.0, resume: false}"
+```
+**Expected:** Turtle visibly moves faster for the second goal.
+
+---
+
+### Test Feature 4 — Waypoint timeout
+Set a very short timeout (2 seconds) for a far waypoint:
+```bash
+ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
+  "{waypoints: [
+      {position: {x: 9.0, y: 9.0, z: 0.0}, orientation: {w: 1.0}},
+      {position: {x: 5.0, y: 5.0, z: 0.0}, orientation: {w: 1.0}}],
+    linear_speed: 1.0, angular_speed: 0.0, waypoint_timeout: 2.0, resume: false}"
+```
+**Expected in Terminal 2:** `Waypoint 1 timed out — skipping.` then turtle moves to waypoint 2.
+
+---
+
+### Test Feature 5 — Change circle speed at runtime
+While turtle is circling (Terminal 2 running, no active goal), open a new terminal:
+```bash
+source ~/ros2/ros2_turtlesim/install/setup.bash
+# Slow it down
+ros2 service call /turtle1/set_speed my_robot_interfaces/srv/SetSpeed \
+  "{linear_speed: 0.3, angular_speed: 0.3}"
+# Speed it up
+ros2 service call /turtle1/set_speed my_robot_interfaces/srv/SetSpeed \
+  "{linear_speed: 4.0, angular_speed: 4.0}"
+```
+**Expected:** Circle radius and speed change immediately in the turtlesim window.
+
+---
+
+### Test Feature 6 — Multiple turtles
+Stop Terminal 1 and Terminal 2 (Ctrl+C both). Then use the launch file instead:
+```bash
+source ~/ros2/ros2_turtlesim/install/setup.bash
+ros2 launch my_turtle_controllers multi_turtle.launch.py
+```
+**Expected:** Two turtles appear and both draw circles. Send goals to each independently:
+```bash
+# Terminal A — navigate turtle1
+ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
+  "{waypoints: [{position: {x: 2.0, y: 8.0, z: 0.0}, orientation: {w: 1.0}}],
+    linear_speed: 2.0, angular_speed: 0.0, waypoint_timeout: 30.0, resume: false}"
+# Terminal B — navigate turtle2 at the same time
+ros2 action send_goal --feedback /turtle2/navigate_path my_robot_interfaces/action/NavigatePath \
+  "{waypoints: [{position: {x: 8.0, y: 2.0, z: 0.0}, orientation: {w: 1.0}}],
+    linear_speed: 2.0, angular_speed: 0.0, waypoint_timeout: 30.0, resume: false}"
 ```
 
 ---
@@ -92,9 +198,24 @@ ros2 action send_goal /turtle1/navigate_path my_robot_interfaces/action/Navigate
 The action client receives `current_x` and `current_y` in every feedback message.
 
 ### 2. Cancel and resume
-Cancel a running goal with `Ctrl+C`, then resume from the same waypoint:
+
+**Step 1** — Send a goal with many waypoints (use slow speed so there's time to cancel):
 ```bash
-ros2 action send_goal /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
+ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
+  "{waypoints: [
+      {position: {x: 1.0, y: 1.0, z: 0.0}, orientation: {w: 1.0}},
+      {position: {x: 9.0, y: 1.0, z: 0.0}, orientation: {w: 1.0}},
+      {position: {x: 9.0, y: 9.0, z: 0.0}, orientation: {w: 1.0}},
+      {position: {x: 1.0, y: 9.0, z: 0.0}, orientation: {w: 1.0}},
+      {position: {x: 5.0, y: 5.0, z: 0.0}, orientation: {w: 1.0}}],
+    linear_speed: 1.0, angular_speed: 0.0, waypoint_timeout: 60.0, resume: false}"
+```
+
+**Step 2** — While the turtle is moving, press `Ctrl+C`. Terminal 2 should log `Cancelled at waypoint X`.
+
+**Step 3** — Resume from where it stopped:
+```bash
+ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
   "{waypoints: [], linear_speed: 0.0, angular_speed: 0.0, waypoint_timeout: 0.0, resume: true}"
 ```
 
@@ -111,14 +232,24 @@ If the turtle cannot reach a waypoint within the timeout (seconds), it skips and
 ```
 
 ### 5. Change circle speed at runtime
+
+While the turtle is circling (no active goal), call from a new terminal:
 ```bash
+source ~/ros2/ros2_turtlesim/install/setup.bash
 ros2 service call /turtle1/set_speed my_robot_interfaces/srv/SetSpeed \
-  "{linear_speed: 1.0, angular_speed: 1.0}"
+  "{linear_speed: 0.3, angular_speed: 0.3}"
 ```
 
 ### 6. Multiple turtles
-Launch two turtles at once:
+
+Instead of running Terminal 1 + Terminal 2 separately, use the launch file:
 ```bash
+source ~/ros2/ros2_turtlesim/install/setup.bash
 ros2 launch my_turtle_controllers multi_turtle.launch.py
 ```
-Then send goals to `/turtle1/navigate_path` or `/turtle2/navigate_path` independently.
+This starts turtlesim and two draw_circle nodes (turtle1 and turtle2). Send goals independently:
+```bash
+ros2 action send_goal --feedback /turtle2/navigate_path my_robot_interfaces/action/NavigatePath \
+  "{waypoints: [{position: {x: 3.0, y: 7.0, z: 0.0}, orientation: {w: 1.0}}],
+    linear_speed: 1.5, angular_speed: 0.0, waypoint_timeout: 30.0, resume: false}"
+```
