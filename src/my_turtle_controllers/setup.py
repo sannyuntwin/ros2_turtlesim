@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'my_turtle_controller'
+package_name = 'my_turtle_controllers'
 
 setup(
     name=package_name,
