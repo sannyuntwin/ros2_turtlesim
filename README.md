@@ -61,15 +61,26 @@ source install/setup.bash
 
 ## Run
 
+> **Important:** Start terminals in this order. Each terminal must source the workspace first.
+
+**Terminal 1 — draw_circle node (start this first):**
 ```bash
-# Terminal 1
-ros2 run turtlesim turtlesim_node
-
-# Terminal 2
+source ~/ros2_ws/install/setup.bash
 ros2 run my_turtle_controllers draw_circle
+```
 
-# Terminal 3 — send a navigation goal
+**Terminal 2 — turtlesim:**
+```bash
+source ~/ros2_ws/install/setup.bash
+ros2 run turtlesim turtlesim_node
+```
+
+**Terminal 3 — send a navigation goal (only after both above are running):**
+```bash
+source ~/ros2_ws/install/setup.bash
 ros2 action send_goal /navigate_path my_robot_interfaces/action/NavigatePath \
   "{waypoints: [{position: {x: 5.0, y: 8.0, z: 0.0}, orientation: {w: 1.0}},
                 {position: {x: 2.0, y: 2.0, z: 0.0}, orientation: {w: 1.0}}]}"
 ```
+
+The turtle will draw circles until a goal is sent, then navigate to each waypoint using proportional control.

@@ -1,10 +1,18 @@
 # Goal
 geometry_msgs/Pose[] waypoints
+float32 linear_speed       # 0.0 = use node default
+float32 angular_speed      # 0.0 = use node default
+float32 waypoint_timeout   # seconds per waypoint, 0.0 = no timeout
+bool resume                # true = resume from last cancelled point
 ---
 # Result
 bool success
 string message
+uint32 waypoints_completed
 ---
 # Feedback
 uint32 current_index
+uint32 total_waypoints
 float32 remaining_distance
+float32 current_x
+float32 current_y
