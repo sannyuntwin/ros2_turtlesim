@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'draw_circle = my_turtle_controller.draw_circle:main',
+            'draw_circle_gazebo = my_turtle_controller.draw_circle_gazebo:main',
         ],
     },
 )
