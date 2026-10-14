@@ -237,73 +237,21 @@ ros2 action send_goal --feedback /turtle2/navigate_path my_robot_interfaces/acti
 
 ---
 
-## Features
-
-### 1. Pose feedback
-The action client receives `current_x` and `current_y` in every feedback message.
-
-### 2. Cancel and resume
-
-**Step 1** — Send a goal with many waypoints (use slow speed so there's time to cancel):
-```bash
-ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
-  "{waypoints: [
-      {position: {x: 1.0, y: 1.0, z: 0.0}, orientation: {w: 1.0}},
-      {position: {x: 9.0, y: 1.0, z: 0.0}, orientation: {w: 1.0}},
-      {position: {x: 9.0, y: 9.0, z: 0.0}, orientation: {w: 1.0}},
-      {position: {x: 1.0, y: 9.0, z: 0.0}, orientation: {w: 1.0}},
-      {position: {x: 5.0, y: 5.0, z: 0.0}, orientation: {w: 1.0}}],
-    linear_speed: 1.0, angular_speed: 0.0, waypoint_timeout: 60.0, resume: false}"
-```
-
-**Step 2** — While the turtle is moving, press `Ctrl+C`. Terminal 2 should log `Cancelled at waypoint X`.
-
-**Step 3** — Resume from where it stopped:
-```bash
-ros2 action send_goal --feedback /turtle1/navigate_path my_robot_interfaces/action/NavigatePath \
-  "{waypoints: [], linear_speed: 0.0, angular_speed: 0.0, waypoint_timeout: 0.0, resume: true}"
-```
-
-### 3. Speed parameter in goal
-Set `linear_speed` in the goal (0.0 uses the node default):
-```bash
-"{..., linear_speed: 3.0, ...}"
-```
-
-### 4. Waypoint timeout
-If the turtle cannot reach a waypoint within the timeout (seconds), it skips and continues:
-```bash
-"{..., waypoint_timeout: 5.0, ...}"
-```
-
-### 5. Change circle speed at runtime
-
-While the turtle is circling (no active goal), call from a new terminal:
-```bash
-source ~/ros2/ros2_turtlesim/install/setup.bash
-ros2 service call /turtle1/set_speed my_robot_interfaces/srv/SetSpeed \
-  "{linear_speed: 0.3, angular_speed: 0.3}"
-```
-
-### 6. Multiple turtles
-
-Instead of running Terminal 1 + Terminal 2 separately, use the launch file:
-```bash
-source ~/ros2/ros2_turtlesim/install/setup.bash
-ros2 launch my_turtle_controllers multi_turtle.launch.py
-```
-This starts turtlesim and two draw_circle nodes (turtle1 and turtle2). Send goals independently:
-```bash
-ros2 action send_goal --feedback /turtle2/navigate_path my_robot_interfaces/action/NavigatePath \
-  "{waypoints: [{position: {x: 3.0, y: 7.0, z: 0.0}, orientation: {w: 1.0}}],
-    linear_speed: 1.5, angular_speed: 0.0, waypoint_timeout: 30.0, resume: false}"
-```
-
----
-
 ## Gazebo (TurtleBot3)
 
 Run the same navigation features on a real physics simulation using TurtleBot3 in Gazebo.
+
+The Gazebo node (`draw_circle_gazebo`) includes **reactive obstacle avoidance** using the TurtleBot3's LiDAR (`/scan`):
+
+| Distance to obstacle | Behaviour |
+|----------------------|-----------|
+| > 0.60 m | Normal motion |
+| 0.35 – 0.60 m (caution) | Linear speed scaled down proportionally |
+| < 0.35 m (danger) | Linear speed = 0, turns away from the closer side |
+
+This applies both during free circling and during waypoint navigation.
+
+**Waypoint markers in RViz:** when a navigation goal is active the node publishes cyan spheres on `/waypoints` — one per pending waypoint. Each sphere turns grey as the robot reaches it and all markers clear when the path finishes or is cancelled.
 
 ### Setup
 
@@ -328,9 +276,16 @@ source ~/.bashrc
 TURTLEBOT3_MODEL=burger ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 ```
 
-**Terminal 2 — run the Gazebo draw_circle node:**
+**Terminal 2 — run the Gazebo draw_circle node (and optionally RViz):**
 ```bash
+# Node only
 ros2 run my_turtle_controllers draw_circle_gazebo
+
+# Or node + RViz together
+ros2 launch my_turtle_controllers gazebo.launch.py
+
+# Node only, no RViz
+ros2 launch my_turtle_controllers gazebo.launch.py rviz:=false
 ```
 The robot starts circling in Gazebo automatically.
 
@@ -486,7 +441,7 @@ cp /mnt/d/ros2_ws/rviz/nav2_clean.rviz ~/nav2_clean.rviz
 
 Then in RViz2: **File → Open Config → `~/nav2_clean.rviz`**
 
-Changes: TF arrows hidden, particle cloud hidden, costmap alpha reduced, laser scan shown as clean green dots.
+Changes from default Nav2 config: TF arrows hidden, particle cloud hidden, costmap alpha reduced, laser scan shown as clean green dots, Odometry trail added, `Fixed Frame` set to `odom` (works with and without Nav2 running).
 
 ### What Nav2 adds over your custom node
 

@@ -115,6 +115,7 @@ class DrawCircleNode(Node):
         index: int,
         total: int,
         linear_speed: float,
+        angular_speed_cap: float,
         timeout: float,
     ) -> str:
         """Drive toward one waypoint. Returns 'reached', 'cancelled', or 'timeout'."""
@@ -150,9 +151,14 @@ class DrawCircleNode(Node):
             angle_error = target_angle - self._current_pose.theta
             angle_error = math.atan2(math.sin(angle_error), math.cos(angle_error))
 
+            raw_angular = angular_kp * angle_error
             twist = Twist()
             twist.linear.x = min(linear_kp * distance, linear_speed)
-            twist.angular.z = angular_kp * angle_error
+            twist.angular.z = (
+                max(-angular_speed_cap, min(raw_angular, angular_speed_cap))
+                if angular_speed_cap > 0.0
+                else raw_angular
+            )
             self.publisher_.publish(twist)
 
             # Feature 1: publish current pose in feedback
@@ -179,6 +185,7 @@ class DrawCircleNode(Node):
 
         # Feature 3: use per-goal speed or fall back to node default
         linear_speed = request.linear_speed if request.linear_speed > 0.0 else self._linear_speed
+        angular_speed_cap = request.angular_speed if request.angular_speed > 0.0 else 0.0
         timeout = request.waypoint_timeout
 
         # Feature 2: resume from last cancelled point
@@ -236,6 +243,7 @@ class DrawCircleNode(Node):
                 index,
                 len(waypoints),
                 linear_speed,
+                angular_speed_cap,
                 timeout,
             )
 
@@ -286,7 +294,10 @@ class DrawCircleNode(Node):
         req.name = self._turtle_name
         future = client.call_async(req)
         rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-        self.get_logger().info(f'Spawned [{self._turtle_name}].')
+        if future.done():
+            self.get_logger().info(f'Spawned [{self._turtle_name}].')
+        else:
+            self.get_logger().error(f'Spawn timed out for [{self._turtle_name}].')
 
 
 def main(args=None):

@@ -9,20 +9,35 @@ from nav_msgs.msg import Odometry
 from rclpy.action import ActionServer
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from sensor_msgs.msg import LaserScan
+from visualization_msgs.msg import Marker, MarkerArray
 
 from my_robot_interfaces.action import NavigatePath
 from my_robot_interfaces.srv import SetSpeed
 
+# LiDAR thresholds (metres)
+_DANGER_DIST = 0.35   # stop linear motion and turn away
+_CAUTION_DIST = 0.60  # start scaling down linear speed
+
 
 class DrawCircleGazeboNode(Node):
-    """Drives a TurtleBot3 in Gazebo in a circle and accepts path-following action goals."""
+    """Drives a TurtleBot3 in Gazebo in a circle and accepts path-following action goals.
+
+    Obstacle avoidance: subscribes to /scan (LiDAR). When an obstacle enters
+    the forward arc the robot slows down (caution zone) or turns away (danger zone).
+    This applies both during free circling and during waypoint navigation.
+    """
 
     def __init__(self):
         super().__init__('draw_circle_gazebo_node')
 
         self.publisher_ = self.create_publisher(TwistStamped, '/cmd_vel', 10)
+        self.waypoints_pub_ = self.create_publisher(MarkerArray, '/waypoints', 10)
         self.odom_subscriber_ = self.create_subscription(
             Odometry, '/odom', self._odom_callback, 10
+        )
+        self.scan_subscriber_ = self.create_subscription(
+            LaserScan, '/scan', self._scan_callback, 10
         )
         self.timer_ = self.create_timer(0.1, self._publish_circle_motion)
 
@@ -39,6 +54,7 @@ class DrawCircleGazeboNode(Node):
         self._current_x: float | None = None
         self._current_y: float | None = None
         self._current_yaw: float | None = None
+        self._latest_scan: LaserScan | None = None
 
         self._saved_waypoints: list = []
         self._saved_index: int = 0
@@ -61,6 +77,9 @@ class DrawCircleGazeboNode(Node):
             1.0 - 2.0 * (qy * qy + qz * qz),
         )
 
+    def _scan_callback(self, msg: LaserScan):
+        self._latest_scan = msg
+
     def _set_speed_callback(self, request: SetSpeed.Request, response: SetSpeed.Response):
         if request.linear_speed > 0.0:
             self._linear_speed = request.linear_speed
@@ -78,9 +97,82 @@ class DrawCircleGazeboNode(Node):
         if self._executing_path:
             return
         msg = TwistStamped()
-        msg.twist.linear.x = self._linear_speed
-        msg.twist.angular.z = self._angular_speed
+        fwd = self._scan_range(-math.pi / 6, math.pi / 6)
+        if fwd < _DANGER_DIST:
+            msg.twist.linear.x = 0.0
+            msg.twist.angular.z = self._avoidance_angular()
+            self.get_logger().warn(f'Obstacle at {fwd:.2f} m — turning to avoid.')
+        else:
+            msg.twist.linear.x = self._linear_speed
+            msg.twist.angular.z = self._angular_speed
         self.publisher_.publish(msg)
+
+    # ------------------------------------------------------------------ #
+    # Obstacle avoidance helpers                                           #
+    # ------------------------------------------------------------------ #
+
+    def _scan_range(self, angle_min_rad: float, angle_max_rad: float) -> float:
+        """Return the minimum valid range reading in the given angular window."""
+        if self._latest_scan is None:
+            return float('inf')
+        scan = self._latest_scan
+        min_r = float('inf')
+        for i, r in enumerate(scan.ranges):
+            if not (scan.range_min <= r <= scan.range_max):
+                continue
+            angle = scan.angle_min + i * scan.angle_increment
+            if angle_min_rad <= angle <= angle_max_rad:
+                min_r = min(min_r, r)
+        return min_r
+
+    def _avoidance_angular(self) -> float:
+        """Turn away from the closer side of the forward arc."""
+        arc = math.pi / 6
+        left = self._scan_range(0.0, arc)
+        right = self._scan_range(-arc, 0.0)
+        # Turn away from the closer obstacle
+        return -self._angular_speed * 2.5 if left < right else self._angular_speed * 2.5
+
+    # ------------------------------------------------------------------ #
+    # Waypoint marker visualisation                                        #
+    # ------------------------------------------------------------------ #
+
+    def _publish_waypoint_markers(self, waypoints: list, start_index: int = 0):
+        """Publish sphere markers for all waypoints; completed ones are grey."""
+        arr = MarkerArray()
+        stamp = self.get_clock().now().to_msg()
+        for i, wp in enumerate(waypoints):
+            m = Marker()
+            m.header.frame_id = 'odom'
+            m.header.stamp = stamp
+            m.ns = 'waypoints'
+            m.id = i
+            m.type = Marker.SPHERE
+            m.action = Marker.ADD
+            m.pose.position.x = wp.position.x
+            m.pose.position.y = wp.position.y
+            m.pose.position.z = 0.0
+            m.pose.orientation.w = 1.0
+            m.scale.x = 0.15
+            m.scale.y = 0.15
+            m.scale.z = 0.15
+            if i < start_index:
+                m.color.r, m.color.g, m.color.b, m.color.a = 0.5, 0.5, 0.5, 0.5
+            else:
+                m.color.r, m.color.g, m.color.b, m.color.a = 0.0, 1.0, 1.0, 1.0
+            arr.markers.append(m)
+        self.waypoints_pub_.publish(arr)
+
+    def _clear_waypoint_markers(self):
+        """Remove all waypoint markers from RViz."""
+        arr = MarkerArray()
+        m = Marker()
+        m.header.frame_id = 'odom'
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.ns = 'waypoints'
+        m.action = Marker.DELETEALL
+        arr.markers.append(m)
+        self.waypoints_pub_.publish(arr)
 
     # ------------------------------------------------------------------ #
     # Navigation                                                           #
@@ -94,6 +186,7 @@ class DrawCircleGazeboNode(Node):
         index: int,
         total: int,
         linear_speed: float,
+        angular_speed_cap: float,
         timeout: float,
     ) -> str:
         """Drive toward one waypoint. Returns 'reached', 'cancelled', or 'timeout'."""
@@ -126,9 +219,29 @@ class DrawCircleGazeboNode(Node):
             angle_error = target_angle - self._current_yaw
             angle_error = math.atan2(math.sin(angle_error), math.cos(angle_error))
 
+            raw_angular = angular_kp * angle_error
             twist = TwistStamped()
             twist.twist.linear.x = min(linear_kp * distance, linear_speed)
-            twist.twist.angular.z = angular_kp * angle_error
+            twist.twist.angular.z = (
+                max(-angular_speed_cap, min(raw_angular, angular_speed_cap))
+                if angular_speed_cap > 0.0
+                else raw_angular
+            )
+
+            # Obstacle avoidance: override or scale the computed twist
+            fwd = self._scan_range(-math.pi / 6, math.pi / 6)
+            if fwd < _DANGER_DIST:
+                # Obstacle too close: stop and steer away
+                twist.twist.linear.x = 0.0
+                twist.twist.angular.z = self._avoidance_angular()
+                self.get_logger().warn(
+                    f'WP {index + 1}/{total} — obstacle at {fwd:.2f} m, avoiding.'
+                )
+            elif fwd < _CAUTION_DIST:
+                # Caution zone: scale linear speed down proportionally
+                scale = (fwd - _DANGER_DIST) / (_CAUTION_DIST - _DANGER_DIST)
+                twist.twist.linear.x *= scale
+
             self.publisher_.publish(twist)
 
             feedback = NavigatePath.Feedback()
@@ -152,6 +265,7 @@ class DrawCircleGazeboNode(Node):
         request = goal_handle.request
 
         linear_speed = request.linear_speed if request.linear_speed > 0.0 else self._linear_speed
+        angular_speed_cap = request.angular_speed if request.angular_speed > 0.0 else 0.0
         timeout = request.waypoint_timeout
 
         if request.resume and self._saved_waypoints:
@@ -175,6 +289,7 @@ class DrawCircleGazeboNode(Node):
             f'Navigating {len(waypoints)} waypoints '
             f'at linear={linear_speed:.2f}, timeout={timeout:.1f}s.'
         )
+        self._publish_waypoint_markers(waypoints, start_index)
 
         completed = 0
         for index in range(start_index, len(waypoints)):
@@ -185,6 +300,7 @@ class DrawCircleGazeboNode(Node):
                 self._saved_index = index
                 goal_handle.canceled()
                 self._executing_path = False
+                self._clear_waypoint_markers()
                 result = NavigatePath.Result()
                 result.success = False
                 result.message = f'Cancelled at waypoint {index + 1}. Send goal with resume=true to continue.'
@@ -203,6 +319,7 @@ class DrawCircleGazeboNode(Node):
                 index,
                 len(waypoints),
                 linear_speed,
+                angular_speed_cap,
                 timeout,
             )
 
@@ -211,6 +328,7 @@ class DrawCircleGazeboNode(Node):
                 self._saved_index = index
                 goal_handle.canceled()
                 self._executing_path = False
+                self._clear_waypoint_markers()
                 result = NavigatePath.Result()
                 result.success = False
                 result.message = f'Cancelled at waypoint {index + 1}. Send goal with resume=true to continue.'
@@ -221,10 +339,13 @@ class DrawCircleGazeboNode(Node):
                 continue
 
             completed += 1
+            # Mark this waypoint grey now that it is reached
+            self._publish_waypoint_markers(waypoints, index + 1)
 
         self._executing_path = False
         self._saved_waypoints = []
         self._saved_index = 0
+        self._clear_waypoint_markers()
         goal_handle.succeed()
         result = NavigatePath.Result()
         result.success = True
